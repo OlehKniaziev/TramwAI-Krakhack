@@ -118,33 +118,25 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	contentsBytes, err := os.ReadFile(".env")
-	contents := string(contentsBytes)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	lines := strings.Split(contents, "\n")
-	for _, envPair := range lines {
-		pair := strings.Split(envPair, "=")
-		err = os.Setenv(pair[0], pair[1])
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
+	var err error
 	dbConnString := os.Getenv("POSTGRES_CONN_STRING")
 	if len(dbConnString) == 0 {
-		log.Fatal("Fuck you")
+		log.Fatalln("Empty POSTGRES_CONN_STRING env var")
 	}
 
 	db, err = sql.Open("postgres", dbConnString)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln(err)
 	}
 
+	portString := os.Getenv("HTTP_PORT")
+	if len(portString) == 0 {
+		log.Fatalln("Empty HTTP_PORT env var")
+	}
+	portString = ":" + portString
+
 	http.HandleFunc("POST /prompt", promptHandler)
-	if err = http.ListenAndServe(":42069", nil); err != nil {
-		log.Fatal(err)
+	if err = http.ListenAndServe(portString, nil); err != nil {
+		log.Fatalln(err)
 	}
 }

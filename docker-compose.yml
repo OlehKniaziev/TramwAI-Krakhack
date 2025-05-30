@@ -1,0 +1,36 @@
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - ".env"
+    depends_on:
+      db:
+        condition:
+          service_healthy
+
+    networks:
+      - network
+
+  db:
+    build: ./db
+    restart: always
+    env_file:
+      - ".env"
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_DB=main
+      - POSTGRES_PASSWORD=postgres
+      - PGUSER=postgres
+
+    networks:
+      - network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5432"]
+      interval: 3s
+      timeout: 6s
+      retries: 10
+
+networks:
+  network:
