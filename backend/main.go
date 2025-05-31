@@ -8,12 +8,13 @@ import (
 	"net/http"
 	"database/sql"
 	"io"
+	"encoding/json"
 	_ "github.com/lib/pq"
 )
 
 type llmPromptDissect struct {
-	keywords []string
-	date     string
+	Keywords []string `json:"keywords"`
+	Date     string `json:"date"`
 }
 
 type event struct {
@@ -25,8 +26,35 @@ type event struct {
 
 var db *sql.DB
 
-func sendPromptToLLM(prompt string) (response llmPromptDissect, err error) {
-	log.Fatal("TODO")
+const modelName = "llama3.2"
+
+const llmGenerateUrl = "http://llm:11434/api/generate"
+
+const promptIntro = `Po dwukropku dostaniesz opis wydarzenia na które chce trafić użytkownik. Z tego opisu musisz zczytać datę w formacie 'Dzień'.'Miesiąc'.'Rok' oraz listę słów kluczowych. Jeżeli użytkownik nie poda roku, znaczy że rok 2025. Sformatuj swoją odpowiedź w następnym formacie JSON bez żadnych komentarzy oraz formatowania - '{\"date\": <data wydarzenia>, \"keywords\": <lista słów kluczowych>}'.`
+
+type llmRawResponse struct {
+	Response string `json:"response"`
+}
+
+func sendPromptToLLM(prompt string) (dissect llmPromptDissect, err error) {
+	jsonPrompt := fmt.Sprintf(`{"model": "%s", "prompt": "%s: %s", "stream": false}`, modelName, promptIntro, prompt)
+	reader := strings.NewReader(jsonPrompt)
+
+	var resp *http.Response
+	resp, err = http.Post(llmGenerateUrl, "application/json", reader)
+	if err != nil {
+		return
+	}
+
+	var rawResp llmRawResponse
+
+	decoder := json.NewDecoder(resp.Body)
+	err = decoder.Decode(&rawResp)
+	if err != nil {
+		return
+	}
+
+	err = json.Unmarshal([]byte(rawResp.Response), &dissect)
 	return
 }
 
@@ -94,11 +122,14 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 	prompt := string(promptBytes)
 	dissect, err := sendPromptToLLM(prompt)
 	if err != nil {
+		log.Println(err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	events, err := queryDatabaseForEvents(dissect.date, dissect.keywords)
+	fmt.Printf("%+v\n", dissect)
+
+	events, err := queryDatabaseForEvents(dissect.Date, dissect.Keywords)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

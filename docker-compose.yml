@@ -3,11 +3,23 @@ services:
     build: ./backend
     env_file:
       - ".env"
+    ports:
+      - 42069:42069
     depends_on:
       db:
         condition:
           service_healthy
+      llm:
+        condition:
+          service_started
 
+    networks:
+      - network
+
+  llm:
+    build: ./llm
+    ports:
+      - 11434:11434
     networks:
       - network
 
