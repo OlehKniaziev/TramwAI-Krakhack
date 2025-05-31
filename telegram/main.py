@@ -116,7 +116,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 def main():
     with open('./token.txt', 'r') as file:
         BOT_TOKEN = file.read().strip()
-=======
+
 import requests
 
 # Conversation states
@@ -218,14 +218,8 @@ async def search_events_handle(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("↩️ Wróciłeś do głównego menu.", reply_markup=main_keyboard)
         return AWAITING_INPUT
 
-    events = fetch_events(text)
-
-    if not events:
-        await update.message.reply_text("Nie znaleziono żadnych wydarzeń.", reply_markup=cancel_keyboard)
-    else:
-        for event in events:
-            await update.message.reply_text(format_event(event), parse_mode="HTML", reply_markup=cancel_keyboard)
-
+    LLM_reply = requests.post("http://localhost:42069/prompt", text)
+    await update.message.reply_text(LLM_reply, reply_markup=cancel_keyboard)
     return FINDING_EVENTS
 
 
@@ -239,7 +233,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 def main():
     with open('./token.txt') as f:
         BOT_TOKEN = f.read().strip()
->>>>>>> origin/telegramInterface
 
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -247,11 +240,7 @@ def main():
         entry_points=[CommandHandler("start", start)],
         states={
             AWAITING_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input)],
-<<<<<<< HEAD
-            FAVORITE_EVENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input)],
-=======
             SLEEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_sleep)],
->>>>>>> origin/telegramInterface
             FINDING_EVENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_events_handle)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
@@ -260,9 +249,5 @@ def main():
     app.add_handler(conv_handler)
     app.run_polling()
 
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/telegramInterface
 if __name__ == "__main__":
     main()
