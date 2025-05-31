@@ -15,6 +15,7 @@ import (
 type llmPromptDissect struct {
 	Keywords []string `json:"keywords"`
 	Date     string `json:"date"`
+	Preferences     []string `json:"preferences"`
 }
 
 type event struct {
@@ -30,14 +31,14 @@ const modelName = "llama3.2"
 
 const llmGenerateUrl = "http://llm:11434/api/generate"
 
-const promptIntro = `Po dwukropku dostaniesz opis wydarzenia na które chce trafić użytkownik. Z tego opisu musisz zczytać datę w formacie 'Dzień'.'Miesiąc'.'Rok' oraz listę słów kluczowych. Jeżeli użytkownik nie poda roku, znaczy że rok 2025. Sformatuj swoją odpowiedź w następnym formacie JSON bez żadnych komentarzy oraz formatowania - '{\"date\": <data wydarzenia>, \"keywords\": <lista słów kluczowych>}'.`
+const dissectPromptIntro = `Po dwukropku dostaniesz opis wydarzenia na które chce trafić użytkownik. Z tego opisu musisz zczytać datę w formacie 'Dzień'.'Miesiąc'.'Rok' oraz listę słów kluczowych oraz dodatkowe preferencje użytkownika. Jeżeli użytkownik nie poda roku, znaczy że rok 2025. Sformatuj swoją odpowiedź w następnym formacie JSON bez żadnych komentarzy oraz formatowania - '{\"date\": <data wydarzenia>, \"keywords\": <lista słów kluczowych>, \"preferences\": <preferencje>}'. Masz następne słowa kluczowe -`
 
 type llmRawResponse struct {
 	Response string `json:"response"`
 }
 
-func sendPromptToLLM(prompt string) (dissect llmPromptDissect, err error) {
-	jsonPrompt := fmt.Sprintf(`{"model": "%s", "prompt": "%s: %s", "stream": false}`, modelName, promptIntro, prompt)
+func askLLM(prompt string) (result string, err error) {
+	jsonPrompt := fmt.Sprintf(`{"model": "%s", "prompt": "%s", "stream": false}`, modelName, prompt)
 	reader := strings.NewReader(jsonPrompt)
 
 	var resp *http.Response
@@ -50,11 +51,57 @@ func sendPromptToLLM(prompt string) (dissect llmPromptDissect, err error) {
 
 	decoder := json.NewDecoder(resp.Body)
 	err = decoder.Decode(&rawResp)
+	result = rawResp.Response
+	return
+}
+
+func sendPromptToLLM(prompt string) (dissect llmPromptDissect, err error) {
+	var rows *sql.Rows
+	rows, err = db.Query("SELECT DISTINCT keyword from Keywords")
 	if err != nil {
 		return
 	}
 
-	err = json.Unmarshal([]byte(rawResp.Response), &dissect)
+	keywords := make([]string, 0, 69)
+
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			keyword string
+		)
+
+		if err = rows.Scan(&keyword); err != nil {
+			return
+		}
+
+		keywords = append(keywords, keyword)
+	}
+
+	if err = rows.Err(); err != nil {
+		return
+	}
+
+	var sb strings.Builder
+
+	for i, keyword := range keywords {
+		sb.WriteString(keyword)
+
+		if i != len(keywords) - 1 {
+			sb.WriteString(", ")
+		}
+	}
+
+	keywordsString := sb.String()
+
+	prompt = fmt.Sprintf(`%s %s: %s`, dissectPromptIntro, keywordsString, prompt)
+
+	var dissectString string
+	dissectString, err = askLLM(prompt)
+	if err != nil {
+		return
+	}
+
+	err = json.Unmarshal([]byte(dissectString), &dissect)
 	return
 }
 
@@ -70,7 +117,7 @@ func queryDatabaseForEvents(date string, keywords []string) (events []event, err
 
 	keywordsString := sb.String()
 
-	sqlString := fmt.Sprintf("SELECT date, title, description, link FROM Events WHERE date LIKE \"%s\" AND event_id in (SELECT event_id WHERE keyword in (%s))", date, keywordsString)
+	sqlString := fmt.Sprintf("SELECT date, title, description, link FROM Events WHERE date LIKE \"%s\" AND event_id in (SELECT event_id FROM Keywords WHERE keyword in (%s))", date, keywordsString)
 	var rows *sql.Rows
 	rows, err = db.Query(sqlString)
 	if err != nil {
@@ -107,8 +154,25 @@ func queryDatabaseForEvents(date string, keywords []string) (events []event, err
 	return
 }
 
-func filterEventsWithLLM(events []event) (resp string, err error) {
-	log.Fatal("TODO")
+const filterPromptIntro = `Po dwukropku otrzymasz wydarzenia oraz preferencje użytkownika w formacie JSON stringa. Odfiltruj tylko te wydarzenia, które pasują do preferencji użytkownika, i sformatuj otrzymane wydarzenia w listę z datą wydarzenia, go tytułem, krótkim opisem, oraz linkiem.`
+
+func filterEventsWithLLM(events []event, preferences []string) (resp string, err error) {
+	var payload struct {
+		Events []event `json:"events"`
+		Preferences []string `json:"preferences"`
+	}
+	payload.Events = events
+	payload.Preferences = preferences
+
+	var payloadBytes []byte
+	payloadBytes, err = json.Marshal(&payload)
+	if err != nil {
+		return
+	}
+
+	payloadString := fmt.Sprintf(`%s: %s`, filterPromptIntro, string(payloadBytes))
+
+	resp, err = askLLM(payloadString)
 	return
 }
 
@@ -135,7 +199,7 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := filterEventsWithLLM(events)
+	response, err := filterEventsWithLLM(events, dissect.Preferences)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
