@@ -16,10 +16,24 @@ services:
     networks:
       - network
 
+  tramwai:
+    build:
+      context: .
+      dockerfile: ./tramwai/Dockerfile
+    env_file:
+      - ".env"
+    networks:
+      - network
+
   llm:
     build: ./llm
     ports:
       - 11434:11434
+    depends_on:
+      tramwai:
+        condition:
+          service_started
+
     networks:
       - network
 

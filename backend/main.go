@@ -31,7 +31,7 @@ const modelName = "llama3.2"
 
 const llmGenerateUrl = "http://llm:11434/api/generate"
 
-const dissectPromptIntro = `Po dwukropku dostaniesz opis wydarzenia na które chce trafić użytkownik. Z tego opisu musisz zczytać datę w formacie 'Dzień'.'Miesiąc'.'Rok' oraz listę słów kluczowych oraz dodatkowe preferencje użytkownika. Jeżeli użytkownik nie poda roku, znaczy że rok 2025. Sformatuj swoją odpowiedź w następnym formacie JSON bez żadnych komentarzy oraz formatowania - '{\"date\": <data wydarzenia>, \"keywords\": <lista słów kluczowych>, \"preferences\": <preferencje>}'. Masz następne słowa kluczowe -`
+const dissectPromptIntro = `Po dwukropku dostaniesz opis wydarzenia na które chce trafić użytkownik. Z tego opisu musisz zczytać datę w formacie 'Dzień'.'Miesiąc'.'Rok' oraz listę słów kluczowych jako stringi oraz dodatkowe preferencje użytkownika też jako listę stringów. Jeżeli użytkownik nie poda roku, znaczy że rok 2025. Sformatuj swoją odpowiedź w następnym formacie JSON bez żadnych komentarzy oraz formatowania - '{\"date\": <data wydarzenia>, \"keywords\": <lista słów kluczowych>, \"preferences\": <preferencje>}'. Masz następne słowa kluczowe -`
 
 type llmRawResponse struct {
 	Response string `json:"response"`
@@ -101,6 +101,8 @@ func sendPromptToLLM(prompt string) (dissect llmPromptDissect, err error) {
 		return
 	}
 
+	fmt.Printf("dissect string: %s\n", dissectString)
+
 	err = json.Unmarshal([]byte(dissectString), &dissect)
 	return
 }
@@ -108,7 +110,7 @@ func sendPromptToLLM(prompt string) (dissect llmPromptDissect, err error) {
 func queryDatabaseForEvents(date string, keywords []string) (events []event, err error) {
 	var sb strings.Builder
 	for i, keyword := range keywords {
-		s := fmt.Sprintf("\"%s\"", keyword)
+		s := fmt.Sprintf("'%s'", keyword)
 		sb.WriteString(s)
 		if i != len(keywords) - 1 {
 			sb.WriteString(", ")
@@ -117,7 +119,8 @@ func queryDatabaseForEvents(date string, keywords []string) (events []event, err
 
 	keywordsString := sb.String()
 
-	sqlString := fmt.Sprintf("SELECT date, title, description, link FROM Events WHERE date LIKE \"%s\" AND event_id in (SELECT event_id FROM Keywords WHERE keyword in (%s))", date, keywordsString)
+	sqlString := fmt.Sprintf("SELECT date, title, description, link FROM Events WHERE date LIKE '%s' AND id in (SELECT event_id FROM Keywords WHERE keyword in (%s))", date, keywordsString)
+	fmt.Println(sqlString)
 	var rows *sql.Rows
 	rows, err = db.Query(sqlString)
 	if err != nil {
@@ -154,25 +157,42 @@ func queryDatabaseForEvents(date string, keywords []string) (events []event, err
 	return
 }
 
-const filterPromptIntro = `Po dwukropku otrzymasz wydarzenia oraz preferencje użytkownika w formacie JSON stringa. Odfiltruj tylko te wydarzenia, które pasują do preferencji użytkownika, i sformatuj otrzymane wydarzenia w listę z datą wydarzenia, go tytułem, krótkim opisem, oraz linkiem.`
+const filterPromptIntro = `Search through given events and filter them with given preferences, you should look through some parts of title and description as there might be some information provided. You should only answer in Polish and do not repeat events. Please give at least three of the relevant ones. The data is given in JSON format and comes after a colon.`
 
 func filterEventsWithLLM(events []event, preferences []string) (resp string, err error) {
-	var payload struct {
-		Events []event `json:"events"`
-		Preferences []string `json:"preferences"`
+	var sb strings.Builder
+	sb.WriteRune('[')
+	for i, event := range events {
+		eventString := fmt.Sprintf(`{\"date\": \"%s\", \"title\": \"%s\", \"description\": \"%s\", \"link\": \"%s\"}`, event.Date, event.Title, event.Description, event.Link)
+		sb.WriteString(eventString)
+		if i != len(events) - 1 {
+			sb.WriteString(", ")
+		}
 	}
-	payload.Events = events
-	payload.Preferences = preferences
+	sb.WriteRune(']')
 
-	var payloadBytes []byte
-	payloadBytes, err = json.Marshal(&payload)
-	if err != nil {
-		return
+	eventsString := sb.String()
+
+	sb.Reset()
+
+	sb.WriteRune('[')
+	for i, preference := range preferences {
+		p := fmt.Sprintf(`\"%s\"`, preference)
+		sb.WriteString(p)
+		if i != len(preferences) - 1 {
+			sb.WriteString(", ")
+		}
 	}
+	sb.WriteRune(']')
 
-	payloadString := fmt.Sprintf(`%s: %s`, filterPromptIntro, string(payloadBytes))
+	preferencesString := sb.String()
+
+	payloadString := fmt.Sprintf(`%s: {\"events\": %s, \"preferences\": %s}`, filterPromptIntro, eventsString, preferencesString)
+
+	log.Printf("paylod string: %s\n", payloadString)
 
 	resp, err = askLLM(payloadString)
+	log.Printf("llm responded: %s\n", resp)
 	return
 }
 
