@@ -13,8 +13,9 @@ import (
 )
 
 type llmPromptDissect struct {
-	Keywords []string `json:"keywords"`
-	Date     string `json:"date"`
+	Keywords     []string `json:"keywords"`
+	DateStart     string `json:"dateStart"`
+	DateEnd        string `json:"dateEnd"`
 	Preferences     []string `json:"preferences"`
 }
 
@@ -23,6 +24,7 @@ type event struct {
 	Title       string
 	Description string
 	Link        string
+	Location    string
 }
 
 var db *sql.DB
@@ -31,15 +33,36 @@ const modelName = "llama3.2"
 
 const llmGenerateUrl = "http://llm:11434/api/generate"
 
-const dissectPromptIntro = `Po dwukropku dostaniesz opis wydarzenia na które chce trafić użytkownik. Z tego opisu musisz zczytać datę w formacie 'Dzień'.'Miesiąc'.'Rok' oraz listę słów kluczowych jako stringi oraz dodatkowe preferencje użytkownika też jako listę stringów. Jeżeli użytkownik nie poda roku, znaczy że rok 2025. Sformatuj swoją odpowiedź w następnym formacie JSON bez żadnych komentarzy oraz formatowania - '{\"date\": <data wydarzenia>, \"keywords\": <lista słów kluczowych>, \"preferences\": <preferencje>}'. Masz następne słowa kluczowe -`
+const dissectPromptIntro = `Ty jesteś bardzo pomocnym asystentem do wyszukiwania wydarzeń w Krakowie, użytkownik podaje Ci jakąś informację o wydarzeniu na które chce trafić, w tym jakieś słowa kluczowe, może też podać datę lub jakiś okres dat, w tym powiedzieć coś w stylu jutro czy za tydzień, masz bazę danych z eventami, która jest dosyć duża, więc chcemy rozkminić jakie są słowa kluczowe i zapisywać to do json structury `
+
+// `Po dwukropku dostaniesz opis wydarzenia na które chce trafić użytkownik. Z tego opisu musisz zczytać interwał dat w formacie 'Rok'-'Miesiąc'-'Dzień', jeżeli użytkownik poda datę, w przeciwnym przypadku wykorzystaj 2025-05-31 jako początek i koniec interwału, oraz listę słów kluczowych jako stringi oraz dodatkowe preferencje użytkownika też jako listę stringów. Jeżeli użytkownik nie poda roku, znaczy że rok 2025. Sformatuj swoją odpowiedź w następnym formacie JSON bez żadnych komentarzy oraz formatowania - '{\"dateStart\": <początek interwalu czasowego>, \"dateEnd\": <koniec interwalu czasowego>, \"keywords\": <lista słów kluczowych>, \"preferences\": <preferencje>}'. Masz następne słowa kluczowe -`
+
 
 type llmRawResponse struct {
 	Response string `json:"response"`
 }
 
+type llmParams struct {
+	Model string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool `json:"stream"`
+}
+
 func askLLM(prompt string) (result string, err error) {
-	jsonPrompt := fmt.Sprintf(`{"model": "%s", "prompt": "%s", "stream": false}`, modelName, prompt)
-	reader := strings.NewReader(jsonPrompt)
+	// var sb strings.Builder
+	// for _, c := range prompt {
+	// 	if c == '"' {
+	// 		sb.WriteString("\\")
+	// 	}
+	// 	sb.WriteRune(c)
+	// }
+
+	// prompt = sb.String()
+
+	var jsonPrompt []byte
+	jsonPrompt, err = json.Marshal(&llmParams{Model: modelName, Prompt: prompt, Stream: false})
+
+	reader := strings.NewReader(string(jsonPrompt))
 
 	var resp *http.Response
 	resp, err = http.Post(llmGenerateUrl, "application/json", reader)
@@ -107,7 +130,7 @@ func sendPromptToLLM(prompt string) (dissect llmPromptDissect, err error) {
 	return
 }
 
-func queryDatabaseForEvents(date string, keywords []string) (events []event, err error) {
+func queryDatabaseForEvents(startDate, endDate string, keywords []string) (events []event, err error) {
 	var sb strings.Builder
 	for i, keyword := range keywords {
 		s := fmt.Sprintf("'%s'", keyword)
@@ -119,7 +142,7 @@ func queryDatabaseForEvents(date string, keywords []string) (events []event, err
 
 	keywordsString := sb.String()
 
-	sqlString := fmt.Sprintf("SELECT date, title, description, link FROM Events WHERE date LIKE '%s' AND id in (SELECT event_id FROM Keywords WHERE keyword in (%s))", date, keywordsString)
+	sqlString := fmt.Sprintf("SELECT date, title, description, link, location FROM Events WHERE date >= '%s' AND date <= '%s' AND id in (SELECT event_id FROM Keywords WHERE keyword in (%s))", startDate, endDate, keywordsString)
 	fmt.Println(sqlString)
 	var rows *sql.Rows
 	rows, err = db.Query(sqlString)
@@ -135,9 +158,10 @@ func queryDatabaseForEvents(date string, keywords []string) (events []event, err
 			title string
 			description string
 			link string
+			location string
 		)
 
-		err = rows.Scan(&date, &title, &description, &link)
+		err = rows.Scan(&date, &title, &description, &link, &location)
 		if err != nil {
 			return
 		}
@@ -147,6 +171,7 @@ func queryDatabaseForEvents(date string, keywords []string) (events []event, err
 			Title: title,
 			Description: description,
 			Link: link,
+			Location: location,
 		})
 	}
 
@@ -160,34 +185,20 @@ func queryDatabaseForEvents(date string, keywords []string) (events []event, err
 const filterPromptIntro = `Search through given events and filter them with given preferences, you should look through some parts of title and description as there might be some information provided. You should only answer in Polish and do not repeat events. Please give at least three of the relevant ones. The data is given in JSON format and comes after a colon.`
 
 func filterEventsWithLLM(events []event, preferences []string) (resp string, err error) {
-	var sb strings.Builder
-	sb.WriteRune('[')
-	for i, event := range events {
-		eventString := fmt.Sprintf(`{\"date\": \"%s\", \"title\": \"%s\", \"description\": \"%s\", \"link\": \"%s\"}`, event.Date, event.Title, event.Description, event.Link)
-		sb.WriteString(eventString)
-		if i != len(events) - 1 {
-			sb.WriteString(", ")
-		}
+	var payload struct {
+		Events []event `json:"events"`
+		Preferences []string `json:"preferences"`
 	}
-	sb.WriteRune(']')
+	payload.Events = events
+	payload.Preferences = preferences
 
-	eventsString := sb.String()
-
-	sb.Reset()
-
-	sb.WriteRune('[')
-	for i, preference := range preferences {
-		p := fmt.Sprintf(`\"%s\"`, preference)
-		sb.WriteString(p)
-		if i != len(preferences) - 1 {
-			sb.WriteString(", ")
-		}
+	var payloadJson []byte
+	payloadJson, err = json.Marshal(&payload)
+	if err != nil {
+		return
 	}
-	sb.WriteRune(']')
 
-	preferencesString := sb.String()
-
-	payloadString := fmt.Sprintf(`%s: {\"events\": %s, \"preferences\": %s}`, filterPromptIntro, eventsString, preferencesString)
+	payloadString := fmt.Sprintf(`%s: %s`, filterPromptIntro, string(payloadJson))
 
 	log.Printf("paylod string: %s\n", payloadString)
 
@@ -213,7 +224,7 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("%+v\n", dissect)
 
-	events, err := queryDatabaseForEvents(dissect.Date, dissect.Keywords)
+	events, err := queryDatabaseForEvents(dissect.DateStart, dissect.DateEnd, dissect.Keywords)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

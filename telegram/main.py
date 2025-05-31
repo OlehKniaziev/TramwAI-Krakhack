@@ -74,7 +74,7 @@ async def favorite_events_handle(update: Update, context: ContextTypes.DEFAULT_T
     if len(events) == 0:
         await update.message.reply_text("Nie masz zapisanych wydarzeń", reply_markup=reply_markup)
         return FAVORITE_EVENTS
-    
+
     text = "\n\n".join(f"{event.name} ({event.date})\n{event.description}" for event in events)
 
     await update.message.reply_text(text, reply_markup=reply_markup)
@@ -95,7 +95,7 @@ async def search_events_handle(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup = ReplyKeyboardMarkup(main_keyboard, resize_keyboard=True)
         await update.message.reply_text("↩️ Wróciłeś do głównego menu.", reply_markup=reply_markup)
         return AWAITING_INPUT
-    
+
     events = fetch_events(user_input)
     reply_markup = ReplyKeyboardMarkup(cancel_keyboard, resize_keyboard=True)
 
@@ -219,7 +219,7 @@ async def search_events_handle(update: Update, context: ContextTypes.DEFAULT_TYP
         return AWAITING_INPUT
 
     LLM_reply = requests.post("http://localhost:42069/prompt", text)
-    await update.message.reply_text(LLM_reply, reply_markup=cancel_keyboard)
+    await update.message.reply_text(LLM_reply.text, reply_markup=cancel_keyboard)
     return FINDING_EVENTS
 
 
